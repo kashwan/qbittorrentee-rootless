@@ -15,7 +15,7 @@
 
 [Unit]
 Description=qBittorrent Enhanced Edition (rootless · s6-overlay v3)
-Documentation=https://github.com/KashWan/qbittorrentee-rootless
+Documentation=https://github.com/kashwan/qbittorrentee-rootless
 Wants=network-online.target
 After=network-online.target
 

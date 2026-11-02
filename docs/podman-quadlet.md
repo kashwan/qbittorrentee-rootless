@@ -53,7 +53,7 @@ loginctl enable-linger "$USER"
 
 ```bash
 # 1. 取部署文件（其实只需要 quadlet/ 与 scripts/install-quadlet.sh）
-git clone https://github.com/KashWan/qbittorrentee-rootless.git
+git clone https://github.com/kashwan/qbittorrentee-rootless.git
 cd qbittorrentee-rootless
 
 # 2. 先看会生成什么

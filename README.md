@@ -66,7 +66,7 @@ podman logs qbittorrentee | grep -i "temporary password"
 ### Docker / Compose
 
 ```bash
-git clone https://github.com/KashWan/qbittorrentee-rootless.git
+git clone https://github.com/kashwan/qbittorrentee-rootless.git
 cd qbittorrentee-rootless
 cp .env.example .env          # 按需改 PUID/PGID/端口
 docker compose up -d
@@ -96,7 +96,7 @@ systemctl --user status qbittorrentee
 
 包是公开的，`podman pull` / `docker pull` 无需登录。
 
-每个上游版本还会在 [Releases](https://github.com/KashWan/qbittorrentee-rootless/releases)
+每个上游版本还会在 [Releases](https://github.com/kashwan/qbittorrentee-rootless/releases)
 建一个同号发布（tag 就是 `5.2.4.10`），想看「上游什么时候发了新版」盯那里即可。
 
 ---
