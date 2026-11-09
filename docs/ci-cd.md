@@ -44,6 +44,25 @@ push(main) / tag v*           代码或标签变更
 4. 用 GHCR v2 `HEAD /manifests/<tag>` 检查 `<version>` 标签是否已存在。
    已存在且不是 `push` 事件、也没开 `force_rebuild` → **SKIP**，零构建开销。
 
+> **这一步有两个容易踩的坑，都会让「标签已存在」被判成「不存在」。**
+>
+> 1. **必须用 `-I`（真正的 HEAD），不能写 `-X HEAD`。**
+>    `-X HEAD` 只换方法、不改 curl 的行为：它仍期待一个响应体，而注册表只回
+>    响应头，curl 于是以 exit 18（`transfer closed with outstanding read data`）
+>    结束。如果兜底写成 `|| echo 000`，状态码会被拼成 `200000`，与 `200` 永不
+>    相等。这个缺陷曾让 SKIP 分支长期失效：定时任务每 6 小时重建一次，
+>    把本应不可变的 `{version}` / `sha-{commit}` 反复覆盖。
+> 2. **`Accept` 必须同时包含 docker 与 OCI 两种清单类型。**
+>    注册表按 `Accept` 做内容协商；清单的实际 media type 不在 `Accept` 里时，
+>    GHCR 返回的是 **404 而不是 406**。2026-11 GitHub 把 `ubuntu-latest` 切到
+>    26.04，该镜像的 docker 默认使用 containerd image store，`docker push`
+>    产出的清单从 `docker.distribution.manifest.v2+json` 变成
+>    `oci.image.manifest.v1+json`，旧 `Accept` 从此拿不到 200。
+>
+> 两个问题叠加的临床表现完全相同：**上游没发新版、仓库也没有新 Release，但
+> 用户侧 `podman auto-update` 报告镜像有更新**。`tests/resolve-upstream.sh`
+> 的用例 6b（OCI 内容协商）与 6c（curl 非零退出码不得拼状态码）分别守住这两条。
+
 `push` 到 `main` 时无条件重建（并额外产出 `edge`）；推 `v*` tag 同样触发重建，
 但不产出 `edge`（`edge` 只代表 `main` 的最新构建）。手动触发可用 `force_rebuild` 强推。
 

@@ -26,16 +26,18 @@ mkdir -p "${TMP}/bin" "${TMP}/out"
 
 # --- 伪造 curl ---------------------------------------------------------------
 # FAKE_HTTP_CODE  注册表 manifest 请求返回的状态码（默认 404 = 标签不存在）
+# FAKE_REQUIRE_OCI 1 = 只接受含 OCI image manifest 类型的 Accept（模拟 GHCR 内容协商）
 # FAKE_TAG_JSON   带 tag 的 release JSON 文件
 # FAKE_LIST_JSON  列表形式的 release JSON 文件
 cat > "${TMP}/bin/curl" <<'CURL'
 #!/usr/bin/env bash
-out=""; url=""; wantcode=0
+out=""; url=""; wantcode=0; accept=""
 args=("$@")
 for i in "${!args[@]}"; do
 	case "${args[$i]}" in
 		-o) out="${args[$((i + 1))]}" ;;
 		-w) wantcode=1 ;;
+		Accept:*) accept="${args[$i]}" ;;
 	esac
 done
 for a in "${args[@]}"; do
@@ -45,8 +47,17 @@ for a in "${args[@]}"; do
 done
 
 if [[ "${wantcode}" -eq 1 ]]; then
-	echo "${FAKE_HTTP_CODE:-404}"
-	exit 0
+	# 模拟注册表的内容协商：清单 media type 不在 Accept 里时回 404（不是 406）
+	if [[ "${FAKE_REQUIRE_OCI:-0}" == "1" ]]; then
+		case "${accept}" in
+			*application/vnd.oci.image.manifest.v1+json*) : ;;
+			*) printf '404'; exit 0 ;;
+		esac
+	fi
+	# 与真实 curl 一致：-w 的输出不带换行。
+	# FAKE_HEAD_EXIT 用来模拟 curl 自身的退出码（-X HEAD 会以 18 结束）。
+	printf '%s' "${FAKE_HTTP_CODE:-404}"
+	exit "${FAKE_HEAD_EXIT:-0}"
 fi
 
 emit() { # $1 文件
@@ -123,6 +134,8 @@ run_case() { # $1 输出文件
 	EVENT_NAME="${EVENT_NAME:-workflow_dispatch}" \
 	FAKE_TOKEN="${FAKE_TOKEN:-}" \
 	FAKE_HTTP_CODE="${FAKE_HTTP_CODE:-404}" \
+	FAKE_REQUIRE_OCI="${FAKE_REQUIRE_OCI:-0}" \
+	FAKE_HEAD_EXIT="${FAKE_HEAD_EXIT:-0}" \
 	bash "${SCRIPT}" >"${TMP}/log" 2>&1
 }
 
@@ -221,6 +234,30 @@ if FAKE_TOKEN=fake FAKE_HTTP_CODE=200 FORCE=false EVENT_NAME=schedule run_case "
 	eq "reason" "$(sed -n 's/^reason=//p' "${TMP}/out/6")" "镜像 ghcr.io/some/repo:5.2.4.10 已存在，上游无新版本"
 else
 	fail "SKIP 分支执行失败：$(cat "${TMP}/log")"
+fi
+
+echo "== 用例 6b：清单为 OCI 类型时仍能识别「已存在」（Accept 必须含 OCI 类型）=="
+# 回归用例：GHCR 按 Accept 做内容协商，面板里没有实际 media type 就回 404。
+# 曾因 Accept 只列 docker 类型，导致 docker push 产出 OCI 清单后每次都误判
+# 「标签不存在」→ 每 6 小时重建，不可变标签被反复覆盖。
+: > "${TMP}/out/6b"
+if FAKE_TOKEN=fake FAKE_HTTP_CODE=200 FAKE_REQUIRE_OCI=1 \
+	FORCE=false EVENT_NAME=schedule run_case "${TMP}/out/6b"; then
+	eq "build" "$(sed -n 's/^build=//p' "${TMP}/out/6b")" "false"
+else
+	fail "OCI 清单场景判定失败（Accept 可能缺 OCI 类型）：$(cat "${TMP}/log")"
+fi
+
+echo "== 用例 6c：curl 以非零码退出但已输出 200 时，不得拼出 '200000' =="
+# 回归用例：-X HEAD 会让 curl 以 exit 18 结束（注册表只回头不回体），
+# 旧实现的 `|| echo 000` 于是把状态码拼成 "200000"，与 "200" 永不相等，
+# 标签恒被判为不存在 —— 这才是定时任务每 6 小时重建的真正原因。
+: > "${TMP}/out/6c"
+if FAKE_TOKEN=fake FAKE_HTTP_CODE=200 FAKE_HEAD_EXIT=18 FAKE_REQUIRE_OCI=1 \
+	FORCE=false EVENT_NAME=schedule run_case "${TMP}/out/6c"; then
+	eq "build" "$(sed -n 's/^build=//p' "${TMP}/out/6c")" "false"
+else
+	fail "curl 非零退出码场景判定失败：$(cat "${TMP}/log")"
 fi
 
 echo "== 用例 7：已存在但 FORCE=true 时必须重建 =="

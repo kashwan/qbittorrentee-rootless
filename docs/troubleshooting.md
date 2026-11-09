@@ -212,6 +212,19 @@ sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1024
 | `Error: short name: auto updates require fully-qualified image reference` | `Image=` 用了短名，但写了 `AutoUpdate=registry` | 改成 `ghcr.io/...` 全限定引用，或删掉 `AutoUpdate=registry` |
 | `Error: invalid reference format` / `repository name must be lowercase` | 镜像名里含大写字母 | 全部改成小写 |
 | 单元跑起来但立刻退出 | `TimeoutStopSec` 太小 / 环境变量写错 | `journalctl --user -u qbittorrentee -n 100` |
+| `podman auto-update` 说镜像「已更新」，但版本号没变、上游也没发新版 | CI 把「标签已存在」误判成「不存在」→ 每 6 小时重建并覆盖 `latest`（2026-11 已修复：`-X HEAD` 的退出码拼接 + 清单 media type 内容协商） | 拉最新一次构建；确认 `latest` 的 digest 不再随时间漂移 |
+
+> **判断「镜像是真更新还是被重建」**：比对不可变标签与移动标签的 digest。
+> 两者一致说明内容同步；`5.2.4.10` 的 digest 变了而版本号没变，说明是被重建覆盖了。
+>
+> ```bash
+> skopeo inspect --format '{{.Digest}}' docker://ghcr.io/kashwan/qbittorrentee-rootless:5.2.4.10
+> skopeo inspect --format '{{.Digest}}' docker://ghcr.io/kashwan/qbittorrentee-rootless:latest
+> podman image inspect --format '{{.Digest}}' ghcr.io/kashwan/qbittorrentee-rootless:latest
+> ```
+>
+> `auto-update` 每次定时器触发都会比对远端 digest 与本地镜像 digest，
+> 只要远端被重推过（哪怕内容等价、只有 label 里的构建时间变了），就会报「已更新」。
 
 > `scripts/install-quadlet.sh` 会在渲染前校验镜像名大小写，并在短名时自动去掉
 > `AutoUpdate=registry`，直接用它生成单元可以避开上表一半的问题。

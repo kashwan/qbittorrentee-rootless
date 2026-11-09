@@ -152,17 +152,33 @@ ghcr_token() {
 	printf '%s' "${tok}"
 }
 
+# manifest 的 Accept 必须同时覆盖 docker 与 OCI 两种 media type。
+# 注册表按 Accept 做内容协商：清单的实际 media type 不在 Accept 里时，
+# 返回的是 404 而不是 406（GHCR 的行为），与「标签不存在」不可区分。
+# 2026-11 GitHub 把 ubuntu-latest 切到 26.04 后，该镜像的 docker 默认使用
+# containerd image store，`docker push` 产出的清单从 docker manifest v2 变成
+# OCI image manifest，这条就变成了实际问题。
+MANIFEST_ACCEPT='application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.docker.distribution.manifest.list.v2+json'
+
 tag_exists() {
 	local ref="$1" repo token code
 	repo="${ref#"${IMAGE}:"}"
 	[[ "${IMAGE}" == ghcr.io/* ]] || return 1
 	token="$(ghcr_token "${IMAGE#ghcr.io/}")"
 	[[ -n "${token}" ]] || return 1
-	code="$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' \
-		-X HEAD \
+
+	# 必须用 -I（真正的 HEAD 请求），不能写 -X HEAD。
+	# -X HEAD 只是把方法换成 HEAD，curl 仍然期待一个响应体；注册表只回头不回体，
+	# curl 于是以 exit 18（transfer closed with outstanding read data）结束。
+	# 若再用 `|| echo 000` 兜底，状态码会被拼成 "200000"，与 "200" 永不相等，
+	# 于是标签恒被判为「不存在」—— 定时任务每 6 小时重建一次，把本应不可变的
+	# {version} 与 sha-{commit} 反复覆盖。2026-11 的 auto-update 误报即由此而来。
+	# 兜底改为 `|| true`，并且只保留数字，避免任何尾部杂质参与比较。
+	code="$(curl -s -I --max-time 20 -o /dev/null -w '%{http_code}' \
 		-H "Authorization: Bearer ${token}" \
-		-H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json' \
-		"https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${repo}" || echo 000)"
+		-H "Accept: ${MANIFEST_ACCEPT}" \
+		"https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${repo}" 2>/dev/null || true)"
+	code="${code//[^0-9]/}"
 	[[ "${code}" == "200" ]]
 }
 
