@@ -12,6 +12,7 @@
 #
 #  输出（写 GITHUB_OUTPUT）
 #    build=true|false   reason   version   tag   image   primary_ref
+#    platforms（linux/amd64,linux/arm64）
 #    tags（多行，version/sha/edge）  aliases（多行，major.minor/major/latest）
 #    push_tags（多行，tags + aliases 的合集，CI 在冒烟通过后一次性推送）
 #
@@ -94,11 +95,24 @@ MAJOR="${BASH_REMATCH[1]}"
 MINOR="${BASH_REMATCH[2]}"
 
 # -----------------------------------------------------------------------------
-# 3. 校验静态包是否齐备（只看 x86_64：本镜像只构建 linux/amd64）
+# 3. 校验静态包是否齐备
+#
+#    支持架构的唯一来源（本脚本）。Dockerfile 里也有一份 TARGETARCH → 上游
+#    架构的映射；新增架构时两处一起改，tests/resolve-upstream.sh 会守住这里。
 # -----------------------------------------------------------------------------
-need_assets=(
-	"qbittorrent-enhanced-nox_x86_64-linux-musl_static.zip"
+ARCH_ASSETS=(
+	"amd64:x86_64:qbittorrent-enhanced-nox_x86_64-linux-musl_static.zip"
+	"arm64:aarch64:qbittorrent-enhanced-nox_aarch64-linux-musl_static.zip"
 )
+need_assets=()
+platforms=()
+for spec in "${ARCH_ASSETS[@]}"; do
+	IFS=: read -r arch _ asset <<<"${spec}"
+	need_assets+=("${asset}")
+	platforms+=("linux/${arch}")
+done
+PLATFORMS_CSV="$(IFS=,; printf '%s' "${platforms[*]}")"
+
 missing=()
 for a in "${need_assets[@]}"; do
 	grep -qxF "${a}" <<<"${ASSETS}" || missing+=("${a}")
@@ -106,7 +120,7 @@ done
 if (( ${#missing[@]} > 0 )); then
 	die "上游 ${TAG} 缺少必需资产：${missing[*]}"
 fi
-note "静态包校验通过（x86_64）"
+note "静态包校验通过（${PLATFORMS_CSV}）"
 
 # -----------------------------------------------------------------------------
 # 4. 组装标签
@@ -188,6 +202,7 @@ finish_skip() {
 	out image "${IMAGE}"
 	out version "${VER}"
 	out tag "${TAG}"
+	out platforms "${PLATFORMS_CSV}"
 	note "SKIP: $1"
 	exit 0
 }
@@ -211,6 +226,7 @@ out tag "${TAG}"
 out prerelease "${PRERELEASE}"
 out published_at "${PUBLISHED:-}"
 out primary_ref "${PRIMARY_REF}"
+out platforms "${PLATFORMS_CSV}"
 out_multi tags "${tags}"
 out_multi aliases "${aliases}"
 out_multi push_tags "${push_tags}"

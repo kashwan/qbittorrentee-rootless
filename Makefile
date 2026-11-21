@@ -10,14 +10,20 @@ RUNTIME    ?= docker
 VERSION    ?= $(shell bash scripts/dockerfile-arg.sh Dockerfile QBITTORRENT_VERSION)
 S6_VERSION ?= $(shell bash scripts/dockerfile-arg.sh Dockerfile S6_OVERLAY_VERSION)
 
-.PHONY: help versions build buildx test test-rootless identity check lint run shell clean
+# 本地默认构建「当前宿主架构」；跨架构请显式指定 PLATFORM / PLATFORMS。
+HOST_ARCH  := $(shell uname -m)
+PLATFORM   ?= linux/$(if $(filter x86_64,$(HOST_ARCH)),amd64,$(if $(filter aarch64,$(HOST_ARCH)),arm64,$(HOST_ARCH)))
+PLATFORMS  ?= linux/amd64,linux/arm64
+
+.PHONY: help versions build buildx qemu test test-rootless identity check lint run shell clean
 
 help:
 	@printf '%s\n' \
-	  'make versions      显示将从 Dockerfile 使用的上游 / s6-overlay 版本' \
-	  'make build         构建镜像（$(IMAGE)）' \
-	  'make buildx        用 buildx 构建 linux/amd64（与 CI 一致，不推送）' \
-	  'make test          冒烟测试（A/B/C 三组用例）' \
+	  'make versions      显示上游 / s6-overlay 版本与支持的平台' \
+	  'make build         构建当前宿主架构镜像（$(IMAGE)，平台 $(PLATFORM)）' \
+	  'make buildx        用 buildx 构建 $(PLATFORMS)（与 CI 一致，不推送）' \
+	  'make qemu          注册 QEMU binfmt（本地跨架构 buildx 用）' \
+	  'make test          冒烟测试（A/B/C/D 四组用例）' \
 	  'make test-rootless rootless podman 行为验证' \
 	  'make identity      身份解析单元测试（无需容器）' \
 	  'make check         shell / Dockerfile / 镜像引用 / 版本控制的静态检查（无需网络）' \
@@ -29,20 +35,24 @@ help:
 versions:
 	@printf '上游 qBittorrent-EE : %s\n' "$(VERSION)"
 	@printf 's6-overlay          : %s\n' "$(S6_VERSION)"
+	@printf '支持平台            : %s\n' "$(PLATFORMS)"
 
 build:
 	$(RUNTIME) build \
-	  --platform linux/amd64 \
+	  --platform $(PLATFORM) \
 	  --build-arg QBITTORRENT_VERSION=$(VERSION) \
 	  --build-arg S6_OVERLAY_VERSION=$(S6_VERSION) \
 	  -t $(IMAGE) .
 
 buildx:
 	$(RUNTIME) buildx build \
-	  --platform linux/amd64 \
+	  --platform $(PLATFORMS) \
 	  --build-arg QBITTORRENT_VERSION=$(VERSION) \
 	  --build-arg S6_OVERLAY_VERSION=$(S6_VERSION) \
 	  -t $(IMAGE) .
+
+qemu:
+	$(RUNTIME) run --privileged --rm tonistiigi/binfmt --install arm64
 
 test:
 	IMAGE=$(IMAGE) RUNTIME=$(RUNTIME) bash tests/smoke.sh

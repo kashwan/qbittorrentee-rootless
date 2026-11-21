@@ -100,18 +100,30 @@ cat > "${TMP}/release.json" <<'JSON'
   "prerelease": false,
   "assets": [
     {"name": "qbittorrent-enhanced-nox_x86_64-linux-musl_static.zip"},
+    {"name": "qbittorrent-enhanced-nox_aarch64-linux-musl_static.zip"},
     {"name": "qbittorrent-enhanced-nox_someotherarch-linux-musl_static.zip"}
   ]
 }
 JSON
 
-cat > "${TMP}/release-missing.json" <<'JSON'
+cat > "${TMP}/release-missing-arm64.json" <<'JSON'
 {
   "tag_name": "release-5.2.4.11",
   "published_at": "2026-10-10T00:00:00Z",
   "prerelease": false,
   "assets": [
-    {"name": "qbittorrent-enhanced-nox_someotherarch-linux-musl_static.zip"}
+    {"name": "qbittorrent-enhanced-nox_x86_64-linux-musl_static.zip"}
+  ]
+}
+JSON
+
+cat > "${TMP}/release-missing-amd64.json" <<'JSON'
+{
+  "tag_name": "release-5.2.4.12",
+  "published_at": "2026-10-11T00:00:00Z",
+  "prerelease": false,
+  "assets": [
+    {"name": "qbittorrent-enhanced-nox_aarch64-linux-musl_static.zip"}
   ]
 }
 JSON
@@ -120,6 +132,7 @@ export PATH="${TMP}/bin:${PATH}"
 export FAKE_TAG_JSON="${TMP}/release.json"
 export FAKE_LIST_JSON="${TMP}/release.json"
 export FAKE_ASSETS="qbittorrent-enhanced-nox_x86_64-linux-musl_static.zip
+qbittorrent-enhanced-nox_aarch64-linux-musl_static.zip
 qbittorrent-enhanced-nox_someotherarch-linux-musl_static.zip"
 
 run_case() { # $1 输出文件
@@ -150,6 +163,7 @@ if FORCE=true EVENT_NAME=schedule GITHUB_SHA=abcdef1234567890 run_case "${TMP}/o
 	eq "version"        "$(sed -n 's/^version=//p' <<<"${o}")" "5.2.4.10"
 	eq "published_at"   "$(sed -n 's/^published_at=//p' <<<"${o}")" "2026-10-03T18:04:46Z"
 	eq "image 已转小写" "$(sed -n 's/^image=//p' <<<"${o}")" "ghcr.io/some/repo"
+	eq "platforms"      "$(sed -n 's/^platforms=//p' <<<"${o}")" "linux/amd64,linux/arm64"
 	has "tags"    "$(multiline "${TMP}/out/1" tags)"    "ghcr.io/some/repo:5.2.4.10"
 	has "tags"    "$(multiline "${TMP}/out/1" tags)"    "ghcr.io/some/repo:sha-abcdef1"
 	has "aliases" "$(multiline "${TMP}/out/1" aliases)" "ghcr.io/some/repo:5.2"
@@ -213,16 +227,33 @@ else
 	fail "失败但提示不明确：$(cat "${TMP}/log")"
 fi
 
-echo "== 用例 5：上游缺 x86_64 静态包应失败 =="
+echo "== 用例 5：上游缺 arm64 静态包应失败 =="
 : > "${TMP}/out/5"
-if FAKE_TAG_JSON="${TMP}/release-missing.json" \
-	FAKE_LIST_JSON="${TMP}/release-missing.json" \
+if FAKE_TAG_JSON="${TMP}/release-missing-arm64.json" \
+	FAKE_LIST_JSON="${TMP}/release-missing-arm64.json" \
 	FAKE_TAG="release-5.2.4.11" \
-	FAKE_ASSETS="qbittorrent-enhanced-nox_someotherarch-linux-musl_static.zip" \
+	FAKE_ASSETS="qbittorrent-enhanced-nox_x86_64-linux-musl_static.zip
+qbittorrent-enhanced-nox_someotherarch-linux-musl_static.zip" \
 	FORCE=true EVENT_NAME=schedule run_case "${TMP}/out/5"; then
-	fail "缺资产竟然通过了"
-elif grep -q "缺少必需资产" "${TMP}/log"; then
-	pass "缺资产被拒绝，且提示清晰"
+	fail "缺 arm64 资产竟然通过了"
+elif grep -q "缺少必需资产" "${TMP}/log" \
+	&& grep -q "aarch64" "${TMP}/log"; then
+	pass "缺 arm64 资产被拒绝，且提示清晰"
+else
+	fail "失败但提示不明确：$(cat "${TMP}/log")"
+fi
+
+echo "== 用例 5b：上游缺 amd64 静态包应失败 =="
+: > "${TMP}/out/5b"
+if FAKE_TAG_JSON="${TMP}/release-missing-amd64.json" \
+	FAKE_LIST_JSON="${TMP}/release-missing-amd64.json" \
+	FAKE_TAG="release-5.2.4.12" \
+	FAKE_ASSETS="qbittorrent-enhanced-nox_aarch64-linux-musl_static.zip" \
+	FORCE=true EVENT_NAME=schedule run_case "${TMP}/out/5b"; then
+	fail "缺 amd64 资产竟然通过了"
+elif grep -q "缺少必需资产" "${TMP}/log" \
+	&& grep -q "x86_64" "${TMP}/log"; then
+	pass "缺 amd64 资产被拒绝，且提示清晰"
 else
 	fail "失败但提示不明确：$(cat "${TMP}/log")"
 fi

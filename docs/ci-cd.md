@@ -14,22 +14,24 @@ schedule  23 */6 * * *        每 6 小时查一次上游
 workflow_dispatch             手动触发（可指定版本 / 强制重建 / 指定 s6 版本）
 push(main) / tag v*           代码或标签变更
 
-  ┌──────────┐   ┌───────────────┐   ┌────────────┐   ┌──────────┐
-  │ resolve  │──►│ build         │──►│ smoke      │──►│ push     │
-  │ 查版本   │   │ 构建 amd64    │   │ 真实容器   │   │ 推全部   │
-  │ 查是否已 │   │ **不推送**    │   │ 冒烟 A/B/C │   │ 标签     │
-  │ 存在     │   │ load 到本地   │   │ + D        │   │          │
-  └──────────┘   └───────────────┘   └────────────┘   └──────────┘
-                                                           │
-                                                           ▼
-                                          ┌────────────┐  ┌────────────┐
-                                          │ rootless   │─►│ release    │
-                                          │ podman     │  │ GitHub     │
-                                          │ 再验一遍   │  │ Release    │
-                                          └────────────┘  └────────────┘
+  ┌──────────┐   ┌──────────────────────┐   ┌────────────┐
+  │ resolve  │──►│ build（matrix）      │──►│ smoke      │
+  │ 查版本   │   │ amd64 / arm64 原生   │   │ 各架构真实 │
+  │ 查是否已 │   │ push-by-digest       │   │ 容器 A/B/C │
+  │ 存在     │   │ 暂不打标签           │   │ + D        │
+  └──────────┘   └──────────────────────┘   └────────────┘
+                            │
+                            ▼
+                 ┌────────────────────┐   ┌────────────┐   ┌────────────┐
+                 │ merge              │──►│ rootless   │──►│ release    │
+                 │ imagetools create  │   │ podman     │   │ GitHub     │
+                 │ 合并 manifest list │   │ 再验一遍   │   │ Release    │
+                 └────────────────────┘   └────────────┘   └────────────┘
 ```
 
-只在 **linux/amd64** 上构建与测试，不使用 QEMU。单次构建约 1 分钟。
+在 **linux/amd64** 与 **linux/arm64** 的原生 runner（`ubuntu-latest` /
+`ubuntu-24.04-arm`）上分别构建与测试，不使用 QEMU。每个架构约 1 分钟，
+两个架构并行执行；最后合并成同一个多架构标签。
 
 ---
 
@@ -38,9 +40,11 @@ push(main) / tag v*           代码或标签变更
 `scripts/resolve-upstream.sh`（纯 bash，无需 jq 之外的依赖）：
 
 1. 取上游最新非 prerelease、且 tag 形如 `release-x.y.z.w` 的发布；
-2. 校验该 release 里存在 `qbittorrent-enhanced-nox_x86_64-linux-musl_static.zip`
-   —— 缺资产直接失败，避免构建出一个下载 404 页的镜像；
-3. 组装标签；
+2. 校验该 release 里同时存在两个架构的静态包
+   `qbittorrent-enhanced-nox_x86_64-linux-musl_static.zip` 与
+   `qbittorrent-enhanced-nox_aarch64-linux-musl_static.zip`
+   —— 缺任一资产直接失败，避免构建出一个下载 404 页的架构镜像；
+3. 组装标签，并输出支持平台 `linux/amd64,linux/arm64`；
 4. 用 GHCR v2 `HEAD /manifests/<tag>` 检查 `<version>` 标签是否已存在。
    已存在且不是 `push` 事件、也没开 `force_rebuild` → **SKIP**，零构建开销。
 
@@ -73,20 +77,27 @@ push(main) / tag v*           代码或标签变更
 
 ---
 
-## 3. build：构建，但**不推送**
+## 3. build：按架构构建，**只推 digest 不打标签**
 
-用 `docker/build-push-action` + `push: false` + `load: true` 把镜像装进 runner 本地的
-docker daemon，标签一次性打全（`version` / `sha` / `edge` / `5.2` / `5` / `latest`）。
+`build` job 是 matrix：amd64 跑 `ubuntu-latest`，arm64 跑 `ubuntu-24.04-arm`。
+两者都用 `docker/build-push-action` 的
+`outputs: type=image,...,push-by-digest=true` 构建并推送**架构镜像**——
+registry 里有 blob 和 manifest，但**没有任何标签指向它**。
+冒烟前不会拉到它，更不会更新 `latest`。
 
 `S6_OVERLAY_VERSION` 默认从 **Dockerfile 的 ARG** 读（`scripts/dockerfile-arg.sh`），
 workflow 里不再抄一份默认值 —— 两处默认值分叉是这类项目最常见的版本漂移来源。
 `validate.yml` 里有一条专门检查「build.yml 不得写死 s6 版本」。
 
+> 不用 QEMU：每个架构都在同架构的原生 runner 上构建和跑冒烟，arm64 下的
+> qBittorrent 不会因为模拟执行而启动超时。构建缓存按架构分 scope，互不覆盖。
+
 ---
 
-## 4. smoke：真实容器冒烟
+## 4. smoke：各架构真实容器冒烟
 
-`tests/smoke.sh` 用刚构建的本地镜像起 4 个容器：
+每个 matrix 分支都会先 `docker pull image@<digest>` 并打上本地标签，再跑
+`tests/smoke.sh`。`tests/smoke.sh` 用刚构建的本地镜像起 4 个容器：
 
 | 用例 | 内容 | 断言 |
 |---|---|---|
@@ -99,17 +110,24 @@ workflow 里不再抄一份默认值 —— 两处默认值分叉是这类项目
 
 ---
 
-## 5. push：冒烟通过后一次性推全部标签
+## 5. merge：冒烟通过后合并 manifest list 并推送全部标签
+
+冒烟通过后，每个架构把自己的 digest 作为 artifact 上传；两个 digest 都到齐，`merge`
+job 才用 `docker buildx imagetools create` 把它们合成一个多架构 manifest list，
+并一次性给这个 index 打上全部标签：
 
 ```
 [version] [sha-xxxxxxx] [edge]  ←  不可变（edge 会移动）
 [major.minor] [major] [latest]  ←  移动标签
 ```
 
-**没有 `docker buildx imagetools create`、没有任何 registry manifest 改写。**
-旧做法是「先推不可变标签 → 冒烟 → 再用 imagetools 把 `latest` 指过去」；现在改成
-「构建不推 → 冒烟 → 一次 `docker push` 全部标签」，效果更严格：
-镜像没跑通就根本不会出现在 registry 里，`latest` / `5.2` / `5` 不可能指向坏镜像。
+标签指向的是 **manifest list**，里面含 `linux/amd64` 与 `linux/arm64` 两条清单：
+`docker pull` / `podman pull` 会按宿主架构自动选择。
+
+> 这里确实用了 `docker buildx imagetools create`，但它只在**两个架构都冒烟通过之后**
+> 才把两个 digest 合成 index 并首次创建标签；不存在「先给坏镜像打标签、事后再改写」。
+> 旧做法正是先推标签再冒烟、然后用 imagetools 把 `latest` 挪过去，现已彻底去掉。
+> `merge` 记录的 digest 是这个多架构 index 的 digest。
 
 ---
 
@@ -123,6 +141,7 @@ workflow 里不再抄一份默认值 —— 两处默认值分叉是这类项目
 - 宿主上配置文件属主 = 当前用户；
 - WebUI 可访问。
 
+这里的 `rootless` job 在 CI 的 amd64 runner 上拉取最终的多架构标签（自动选中 amd64 清单）。
 环境不满足（无 subuid、podman 不可用）时退出码 `77`，workflow 转成 `::notice::` 跳过。
 
 ---
@@ -136,6 +155,9 @@ workflow 里不再抄一份默认值 —— 两处默认值分叉是这类项目
 | `5.2` / `5` | 移动 | 每次冒烟通过后 |
 | `latest` | 移动 | 每次冒烟通过后 |
 | `edge` | 移动 | 每次 `push` 到 `main`（推 tag 不更新它） |
+
+所有标签都是 **manifest list**，同时包含 `linux/amd64` 与 `linux/arm64` 两条清单；
+拉取时由容器运行时按宿主架构自动选择，不需要手动指定 `--platform`。
 
 **镜像版本号与上游 release 严格一致**：上游发 `5.2.4.10`，这里就是 `5.2.4.10`，
 不做自己的版本编排。想钉死就用不可变标签，想跟随就 `latest`。
@@ -192,7 +214,7 @@ Releases 页面因此成为一条按版本排好的时间线，`/releases/latest
 |---|---|
 | 上游版本链接 | `https://github.com/c0re100/.../releases/tag/release-x.y.z.w` |
 | 上游发布时间 | 上游 API 的 `published_at` |
-| 镜像 digest | build job 的 `docker buildx imagetools inspect` 输出 |
+| 镜像 digest | merge job 的 `docker buildx imagetools inspect` 输出（多架构 index 的 digest） |
 | 拉取命令 | `docker pull` / `podman pull` 各一行 |
 | 本次推送的镜像标签 | resolve 的 `push_tags`，只列短名（`5.2.4.10` / `latest` / `edge` …） |
 
@@ -230,8 +252,9 @@ Release 页面删除后，tag 会保留（GitHub 默认行为）。下次 `force
 
 | 决定 | 原因 |
 |---|---|
-| **只构建 amd64** | 目标机是 x86_64；多架构要 QEMU、镜像体积翻倍、测试矩阵翻倍。Dockerfile 里有架构守卫，`--platform linux/arm64` 会直接失败 |
+| **双架构、原生 runner** | amd64 用 `ubuntu-latest`、arm64 用 `ubuntu-24.04-arm`，各跑各的构建与冒烟；不用 QEMU，避免模拟执行下 qBittorrent 启动超时。代价是 CI 矩阵翻倍 |
 | **零编译** | 上游直接发布 musl 静态二进制；构建失败面从「Qt/libtorrent 编译」缩到「下载 + 解包」 |
+| **digest → merge → 标签** | 冒烟前架构镜像只以 digest 存在，没有任何标签；两个架构都通过后才合成 manifest list 并首次创建标签 |
 | **`provenance: false` / `sbom: false`** | attestation 会往 index 里塞 `unknown/unknown` 平台 manifest，老版本 Podman（如 Ubuntu 22.04 的 3.4）拉取时报 `no image found in manifest list for architecture` |
 | **先冒烟后推送** | 见第 5 节 |
 | **`8 小时内` 检查一次而不是实时** | 上游发版不频繁；6 小时足够，也不会刷爆 Actions 额度 |
@@ -249,6 +272,10 @@ Actions → `build` → Run workflow：
 | `force_rebuild` | 忽略「标签已存在」，强制重建（用于修 CI 脚本后重发同一版本） |
 | `s6_overlay_version` | 覆盖 Dockerfile 里的 s6-overlay 版本，留空则用默认值 |
 
+> **从单架构迁移**：如果某个版本标签是旧流水线（仅 amd64）创建的，CI 会因
+> 「标签已存在」而 SKIP，不会自动把它变成多架构。首次启用多架构后，对每个要升级的
+> 版本跑一次 `force_rebuild = true`，让标签重新指向合并后的 manifest list。
+
 ---
 
 ## 11. validate.yml 检查了什么
@@ -262,11 +289,11 @@ Actions → `build` → Run workflow：
 | Dockerfile RUN 块 | `scripts/check-dockerfile-runs.sh` | 每个 `RUN` 抽出来过 `sh -n`，拦截引号不闭合这类只有 build 才暴露的错 |
 | 源文件是否纳入版本控制 | `scripts/check-tracked-files.sh` | `.gitignore` 规则写得过宽，把 `qbt-lib.sh` 这种源文件挡在仓库外 |
 | 镜像引用 | `scripts/check-image-refs.sh` | 大写仓库名（`repository name must be lowercase`）、短名配 `AutoUpdate=registry` |
-| 版本来源一致性 | `scripts/dockerfile-arg.sh` | 版本格式非法、`build.yml` 又写死 s6 版本 |
+| 版本来源一致性 | `scripts/dockerfile-arg.sh` | 版本格式非法、`build.yml` 又写死 s6 版本、resolve 漏掉某个架构的静态包 |
 | Hadolint | hadolint | Dockerfile 最佳实践 |
 | YAML 语法 | python3 + pyyaml | workflow / compose / 配置文件写坏 |
-| 单元测试 | `tests/identity.sh`、`tests/resolve-upstream.sh` | 身份映射、版本解析与标签组装 |
-| 单架构构建 + 冒烟 | buildx + `tests/smoke.sh` | 与 build.yml 同样的冒烟 |
+| 单元测试 | `tests/identity.sh`、`tests/resolve-upstream.sh` | 身份映射、版本解析、双架构资产校验与标签组装 |
+| 双架构构建 + 冒烟 | buildx matrix + `tests/smoke.sh` | amd64 / arm64 各自原生构建并跑同样的冒烟 |
 
 ---
 
@@ -294,7 +321,8 @@ make check     # sh/bash 语法 + Dockerfile RUN 块 + 镜像引用 + 文件追�
 make lint      # shellcheck(sh/bash) + hadolint（与 validate.yml 逐条一致，需要 docker）
 make test      # 冒烟 A/B/C/D（需要先 make build）
 make test-rootless   # rootless 行为验证（普通用户执行）
-make versions  # 显示将从 Dockerfile 使用的上游 / s6-overlay 版本
+make versions  # 显示上游 / s6-overlay 版本与支持平台
+make buildx    # 多架构构建（跨架构执行前先 make qemu）
 ```
 
 ---
@@ -306,6 +334,6 @@ make versions  # 显示将从 Dockerfile 使用的上游 / s6-overlay 版本
 | 镜像版本 | 对应上游 | 变更 |
 |---|---|---|
 | `5.2.4.10` | release-5.2.4.10 | 首个可用版本：s6-overlay v3、PUID/PGID 三场景、rootless/Quadlet 支持、CI 自动跟随上游 |
-| （下一版） | — | 收敛为 amd64 单架构；rootless 下完全不 chown；healthcheck 端口自适应；版本来源单一化；文档收敛为 7 份 |
+| （下一版） | — | 新增 linux/arm64：两个原生 runner 分别构建与冒烟，按 digest 合并为多架构 manifest list；rootless 下完全不 chown；healthcheck 端口自适应；版本来源单一化；文档收敛为 7 份 |
 
 上游发新版本时，本仓库不需要改任何代码 —— CI 会自己发现并发布同名镜像标签。

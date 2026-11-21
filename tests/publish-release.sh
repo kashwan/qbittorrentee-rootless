@@ -107,6 +107,7 @@ if [[ "${rc}" -eq 0 ]] \
 	&& grep -q 'release-5.2.4.10' <<<"${o2}" \
 	&& grep -q 'docker pull ghcr.io/owner/repo:5.2.4.10' <<<"${o2}" \
 	&& grep -q 'sha256:deadbeef0000' <<<"${o2}" \
+	&& grep -q 'linux/amd64, linux/arm64' <<<"${o2}" \
 	&& grep -qx 'edge' <<<"${o2}" \
 	&& [[ ! -s "${STUB_LOG}" ]]; then
 	ok "说明内容完整，且未创建 Release"

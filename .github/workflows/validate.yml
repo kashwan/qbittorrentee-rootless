@@ -80,6 +80,16 @@ jobs:
             echo "::error::build.yml 里又写死了 S6_OVERLAY_VERSION，应从 Dockerfile 读取"
             exit 1
           fi
+          # resolve-upstream.sh 必须同时校验两个架构的上游静态包，
+          # 否则 CI 可能在缺少 arm64 资产时仍然开始构建。
+          for asset in \
+            qbittorrent-enhanced-nox_x86_64-linux-musl_static.zip \
+            qbittorrent-enhanced-nox_aarch64-linux-musl_static.zip; do
+            grep -qF "${asset}" scripts/resolve-upstream.sh || {
+              echo "::error::resolve-upstream.sh 未校验必需资产：${asset}"
+              exit 1
+            }
+          done
 
       # 必须把仓库挂进去：hadolint 只会从「当前目录」读 .hadolint.yaml，
       # 用 `< Dockerfile` 从 stdin 读时它找不到配置，DL3018 之类的忽略全部失效。
@@ -119,28 +129,40 @@ jobs:
         run: bash tests/publish-release.sh
 
   smoke:
-    name: 单架构构建 + 冒烟
-    runs-on: ubuntu-latest
+    name: 多架构构建 + 冒烟（${{ matrix.arch }}）
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
 
       - uses: docker/setup-buildx-action@v4
 
-      - name: 构建 amd64
+      - name: 构建 ${{ matrix.arch }}
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           load: true
           pull: true
-          tags: qbittorrentee:ci
+          tags: qbittorrentee:ci-${{ matrix.arch }}
           build-args: |
             IMAGE_SOURCE=https://github.com/${{ github.repository }}
             VCS_REF=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          provenance: false
+          sbom: false
 
       - name: 冒烟测试
         env:
-          IMAGE: qbittorrentee:ci
+          IMAGE: qbittorrentee:ci-${{ matrix.arch }}
         run: bash tests/smoke.sh

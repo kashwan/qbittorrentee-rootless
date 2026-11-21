@@ -3,20 +3,23 @@ name: build
 # =============================================================================
 #  上游有新版本时自动构建并推送；代码变更时重建 edge。
 #
-#  只构建 linux/amd64 —— 不使用 QEMU，构建耗时 ≈ 1 分钟。
+#  构建 linux/amd64 与 linux/arm64 两个架构：
+#    * amd64 跑在 ubuntu-latest，arm64 跑在 ubuntu-24.04-arm（原生，不用 QEMU）
+#    * 每个架构单独构建、单独冒烟，按 digest 推送（此时还没有任何可拉取的标签）
+#    * merge 阶段用 buildx imagetools create 把两个架构清单合成 manifest list，
+#      冒烟通过后才把 version / sha / edge / 5.2 / 5 / latest 指过去
 #
 #  流程：
 #    resolve  查上游版本 + 查 GHCR 是否已有 → 决定要不要构建
-#    build    构建（**不推送**，load 进本地 docker daemon）
-#    smoke    对本地镜像跑真实容器冒烟（tests/smoke.sh）
-#    push     冒烟通过后一次性推送全部标签（version / sha / edge / 5.2 / 5 / latest）
+#    build    matrix(amd64/arm64)：构建 → 冒烟 → 推送按 digest 的架构镜像
+#    merge    合并两个架构为多架构 manifest list，推送全部标签
 #    rootless 用 rootless podman 再验一遍属主
 #    release  全部验证通过后创建 GitHub Release，tag 与上游版本号同名
 #
 #  为什么是「先冒烟后推送」：
-#    这样 latest / 5.2 / 5 永远不会指向一个没跑通的镜像。旧做法是用
-#    `buildx imagetools create` 在冒烟后再去改标签，那一步已经去掉 ——
-#    改成推送前先验证，pipeline 里不再有任何 registry manifest 操作。
+#    架构镜像在冒烟前只以 digest 形式存在，没有任何标签指向它；merge 只在
+#    两个架构都冒烟通过后才创建标签。所以 latest / 5.2 / 5 永远不会指向一个
+#    没跑通的镜像。
 #
 #  Release 的 tag 是纯版本号（5.2.4.10），不带 v 前缀：
 #    本文件的 on.push.tags 里有 "v*"，若 Release 也叫 v5.2.4.10，任何一次
@@ -79,6 +82,7 @@ jobs:
       tag: ${{ steps.r.outputs.tag }}
       image: ${{ steps.r.outputs.image }}
       primary_ref: ${{ steps.r.outputs.primary_ref }}
+      platforms: ${{ steps.r.outputs.platforms }}
       push_tags: ${{ steps.r.outputs.push_tags }}
       published_at: ${{ steps.r.outputs.published_at }}
     steps:
@@ -103,20 +107,44 @@ jobs:
             echo "| 是否构建 | \`${{ steps.r.outputs.build }}\` |"
             echo "| 上游版本 | \`${{ steps.r.outputs.tag }}\` |"
             echo "| 发布时间 | ${{ steps.r.outputs.published_at }} |"
+            echo "| 支持平台 | \`${{ steps.r.outputs.platforms }}\` |"
             echo "| 目标镜像 | \`${{ steps.r.outputs.primary_ref }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # 2. 构建 → 冒烟 → 推送（linux/amd64）
+  # 2. 按架构构建 → 冒烟 → 按 digest 推送
+  #
+  #    每个架构都在自己的原生 runner 上跑，不用 QEMU；冒烟通过后才把 digest
+  #    作为 artifact 交给 merge。任一阵型失败，merge 不会执行，也就不会有
+  #    任何标签被创建。
   # ---------------------------------------------------------------------------
   build:
     needs: resolve
     if: needs.resolve.outputs.build == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      digest: ${{ steps.digest.outputs.value }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
+
+      - name: 校验架构在支持列表内
+        env:
+          PLATFORMS: ${{ needs.resolve.outputs.platforms }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          case ",${PLATFORMS}," in
+            *",${PLATFORM},"*) ;;
+            *) echo "::error::${PLATFORM} 不在 resolve 输出的支持平台（${PLATFORMS}）内"; exit 1 ;;
+          esac
 
       - uses: docker/setup-buildx-action@v4
 
@@ -148,80 +176,145 @@ jobs:
             echo "__EOF__"
           } >> "$GITHUB_OUTPUT"
 
-      - name: 构建（不推送）
+      - name: 构建并推送架构镜像（按 digest，暂不打标签）
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64
-          push: false
-          load: true
-          pull: true
-          tags: ${{ needs.resolve.outputs.push_tags }}
+          platforms: ${{ matrix.platform }}
+          # push-by-digest：只推 blob 与 manifest，不创建标签。
+          # 标签统一由 merge 在冒烟通过后创建。
+          outputs: type=image,name=${{ needs.resolve.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           build-args: ${{ steps.args.outputs.build_args }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
           # attestation（provenance/sbom）会往镜像里塞一层 manifest，
           # 老版本 Podman（Ubuntu 22.04 自带 3.4）拉取时可能报
           # "no image found in manifest list for architecture"。
-          # 单架构镜像不需要它，关掉保证各版本 podman 都能直接 pull。
+          # 按 digest 推送的架构镜像不需要它，关掉保证各版本 podman 都能直接 pull。
           provenance: false
           sbom: false
 
-      - name: 冒烟测试（本地镜像，真实容器）
+      - name: 拉取本架构镜像并打本地标签
         env:
-          IMAGE: ${{ needs.resolve.outputs.primary_ref }}
-        run: |
-          docker image inspect "${IMAGE}" >/dev/null
-          IMAGE="${IMAGE}" bash tests/smoke.sh
-
-      # 只有冒烟通过才会执行到这里，所以 latest 不会指向坏镜像
-      - name: 推送全部标签
-        env:
-          REFS: ${{ needs.resolve.outputs.push_tags }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          printf '%s\n' "${REFS}" | while read -r ref; do
-            [ -n "${ref}" ] || continue
-            echo "==> push ${ref}"
-            docker push "${ref}"
-          done
+          docker pull "${IMAGE}@${DIGEST}"
+          docker tag "${IMAGE}@${DIGEST}" "qbittorrentee:smoke-${ARCH}"
 
-      # Release 说明里要写 digest。六个标签指向同一 digest，取不可变的
-      # version 标签即可。--format 输出不带换行，统一 tr 掉再喂给 GITHUB_OUTPUT。
-      - name: 记录镜像 digest
-        id: digest
+      - name: 冒烟测试（本架构，真实容器）
+        env:
+          IMAGE: qbittorrentee:smoke-${{ matrix.arch }}
+        run: bash tests/smoke.sh
+
+      - name: 记录架构 digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          printf '%s\n' "${DIGEST}" > "/tmp/digests/${ARCH}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 3. 合并多架构 manifest list 并推送全部标签
+  #
+  #    两个架构都冒烟通过后才会走到这里。imagetools create 只做「把两个
+  #    digest 合成一个 index」这件事，不再改写任何已有标签的内容。
+  # ---------------------------------------------------------------------------
+  merge:
+    needs: [resolve, build]
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.merge.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 合并 manifest list 并推送全部标签
+        id: merge
         env:
           IMAGE: ${{ needs.resolve.outputs.image }}
           VERSION: ${{ needs.resolve.outputs.version }}
+          REFS: ${{ needs.resolve.outputs.push_tags }}
         run: |
           set -euo pipefail
+          refs=()
+          for f in /tmp/digests/*; do
+            [ -f "${f}" ] || continue
+            refs+=("${IMAGE}@$(cat "${f}")")
+          done
+          [ "${#refs[@]}" -eq 2 ] || {
+            echo "::error::期望 2 个架构 digest，实际 ${#refs[@]} 个"
+            exit 1
+          }
+
+          args=()
+          while IFS= read -r ref; do
+            [ -n "${ref}" ] || continue
+            args+=(-t "${ref}")
+          done <<< "${REFS}"
+
+          echo "==> 合并 ${refs[*]}"
+          docker buildx imagetools create "${args[@]}" "${refs[@]}"
+
           value="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" \
             --format '{{.Manifest.Digest}}' | tr -d '[:space:]')"
           echo "digest: ${value}"
-          echo "value=${value}" >>"$GITHUB_OUTPUT"
+          echo "digest=${value}" >>"$GITHUB_OUTPUT"
 
       - name: 汇总
         env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PLATFORMS: ${{ needs.resolve.outputs.platforms }}
+          DIGEST: ${{ steps.merge.outputs.digest }}
           REFS: ${{ needs.resolve.outputs.push_tags }}
         run: |
           {
             echo "### 构建完成"
             echo ""
-            echo "**上游版本**：\`${{ needs.resolve.outputs.tag }}\`"
+            echo "**上游版本**：\`${VERSION}\`"
+            echo ""
+            echo "**平台**：${PLATFORMS}"
+            echo ""
+            echo "**Digest**：\`${DIGEST}\`"
             echo ""
             echo "**已推送标签**："
             echo '```'
             printf '%s\n' "${REFS}"
             echo '```'
-            echo ""
-            echo "平台：linux/amd64"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # 3. rootless Podman 验证（可选，环境不满足时自动跳过）
+  # 4. rootless Podman 验证（可选，环境不满足时自动跳过）
   # ---------------------------------------------------------------------------
   rootless:
-    needs: [resolve, build]
+    needs: [resolve, merge]
     if: needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -255,7 +348,7 @@ jobs:
           exit "${rc}"
 
   # ---------------------------------------------------------------------------
-  # 4. 创建 GitHub Release（tag = 上游版本号，与镜像不可变标签同名）
+  # 5. 创建 GitHub Release（tag = 上游版本号，与镜像不可变标签同名）
   #
   #    needs 里带上 rootless：只有冒烟 + rootless 全过才发版。
   #    build 为 false 时整个 job 跳过 —— 没构建就没有新版本可发。
@@ -263,7 +356,7 @@ jobs:
   #    触发的重复重建不会产生重复 Release。
   # ---------------------------------------------------------------------------
   release:
-    needs: [resolve, build, rootless]
+    needs: [resolve, merge, rootless]
     if: needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-latest
     # 顶层是 contents: read，创建 Release 需要 write，job 级覆盖
@@ -281,14 +374,14 @@ jobs:
           UPSTREAM_TAG: ${{ needs.resolve.outputs.tag }}
           PUBLISHED_AT: ${{ needs.resolve.outputs.published_at }}
           IMAGE: ${{ needs.resolve.outputs.image }}
-          DIGEST: ${{ needs.build.outputs.digest }}
+          DIGEST: ${{ needs.merge.outputs.digest }}
           REFS: ${{ needs.resolve.outputs.push_tags }}
         run: bash scripts/publish-release.sh
 
       - name: 汇总
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
-          DIGEST: ${{ needs.build.outputs.digest }}
+          DIGEST: ${{ needs.merge.outputs.digest }}
         run: |
           {
             echo "### GitHub Release"

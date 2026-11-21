@@ -4,7 +4,7 @@
 > 为 rootless Podman + Quadlet 而设计，并由 GitHub Actions 自动跟随上游发版。
 
 ```
-ghcr.io/kashwan/qbittorrentee-rootless:latest     # linux/amd64 · GPL-2.0-or-later
+ghcr.io/kashwan/qbittorrentee-rootless:latest     # linux/amd64 · linux/arm64 · GPL-2.0-or-later
 ```
 
 ---
@@ -34,11 +34,13 @@ PUID/PGID 会静默失效（配了等于没配），而 rootless 恰恰是个人
 | **启动日志结构化** | 每次启动打印「场景 / uid_map / 容器→宿主 / 运行身份 / 属主策略 / umask」 |
 | **端口自适应健康检查** | healthcheck 依次探测 `HEALTHCHECK_PORT` → `WEBUI_PORT` → 配置文件里的端口 |
 | **优雅停机** | `SIGTERM` 后给 15 秒落盘 resume 数据；崩溃最多重启 5 次，不无限 crash-loop |
-| **零编译** | 直接用上游 musl 静态二进制，构建约 1 分钟，失败面极小 |
+| **零编译** | 直接用上游 musl 静态二进制，每种架构构建约 1 分钟，失败面极小 |
+| **双架构** | `linux/amd64` 与 `linux/arm64` 各自在原生 runner 上构建、冒烟，再合并为同一 manifest list |
 | **版本跟随上游** | 每 6 小时检查一次 release，有新版本才构建；标签与上游版本一一对应 |
 
-支持 **linux/amd64** 单一架构。用 `--platform linux/arm64` 构建会直接失败，不会产出一个跑错
-二进制的镜像。
+支持 **linux/amd64** 与 **linux/arm64**。CI 会分别构建两个架构、各自跑完冒烟测试后，
+再用 manifest list 合并成同一个标签；`docker pull` / `podman pull` 会按宿主架构自动选择，
+不需要手动加 `--platform`。其它架构会在构建时明确失败，不会产出一个跑错二进制的镜像。
 
 ---
 
@@ -94,7 +96,8 @@ systemctl --user status qbittorrentee
 | `latest` | 最新**通过冒烟测试**的稳定版 |
 | `edge` | `main` 分支最新构建（可能未充分验证） |
 
-包是公开的，`podman pull` / `docker pull` 无需登录。
+所有标签都是多架构 manifest list（`linux/amd64` + `linux/arm64`）。包是公开的，
+`podman pull` / `docker pull` 无需登录。
 
 每个上游版本还会在 [Releases](https://github.com/kashwan/qbittorrentee-rootless/releases)
 建一个同号发布（tag 就是 `5.2.4.10`），想看「上游什么时候发了新版」盯那里即可。

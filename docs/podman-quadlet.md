@@ -12,7 +12,7 @@
 
 | 项 | 要求 | 检查命令 |
 |---|---|---|
-| 架构 | **linux/amd64**（x86_64），镜像不含其它架构 | `uname -m` |
+| 架构 | **linux/amd64**（x86_64）或 **linux/arm64**（aarch64），拉取时自动匹配 | `uname -m` |
 | 容器运行时 | Podman 4.4+（Quadlet 需要；建议 4.9+）或 Docker 20.10+ | `podman --version` |
 | rootless | 当前用户非 root，且有 subuid/subgid | `id -u` · `grep "^$USER:" /etc/subuid /etc/subgid` |
 | 磁盘 | 镜像约 145 MB + 你的下载量 | — |
@@ -327,8 +327,15 @@ podman rmi ghcr.io/kashwan/qbittorrentee-rootless:latest
 ## 10. 从源码构建并部署到本机
 
 ```bash
-make build IMAGE=qbittorrentee:local     # 版本号自动取 Dockerfile 里的 ARG
+make build IMAGE=qbittorrentee:local     # 构建当前宿主架构，版本号自动取 Dockerfile 里的 ARG
 make test  IMAGE=qbittorrentee:local     # 真实容器冒烟
+```
+
+`make build` 会自动使用宿主架构（x86_64 → `linux/amd64`，aarch64 → `linux/arm64`）。
+想在 x86_64 上验证 arm64，可以先用 `make qemu` 注册 binfmt，再执行：
+
+```bash
+make buildx IMAGE=qbittorrentee:multi PLATFORMS=linux/amd64,linux/arm64
 ```
 
 再把单元里的 `Image=` 指向 `qbittorrentee:local`。注意**短名不支持 `AutoUpdate=registry`**，

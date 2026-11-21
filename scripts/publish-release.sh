@@ -119,7 +119,7 @@ trap 'if [[ -n "${notes:-}" ]]; then rm -f "${notes}" 2>/dev/null || true; fi' E
 	if [[ -n "${PUBLISHED_AT}" ]]; then
 		printf '| 上游发布 | %s |\n' "${PUBLISHED_AT}"
 	fi
-	printf '| 平台 | linux/amd64 |\n'
+	printf '| 平台 | linux/amd64, linux/arm64 |\n'
 	if [[ -n "${DIGEST}" ]]; then
 		printf '| Digest | `%s` |\n' "${DIGEST}"
 	fi
@@ -134,7 +134,7 @@ trap 'if [[ -n "${notes:-}" ]]; then rm -f "${notes}" 2>/dev/null || true; fi' E
 	printf '### 说明\n\n'
 	printf '%s\n' \
 		'- 二进制直接取自上游 musl 静态包，未做任何源码修改；本镜像只负责容器与 rootless 适配。' \
-		'- 只构建 `linux/amd64`，不使用 QEMU。' \
+		'- 同时构建 `linux/amd64` 与 `linux/arm64`，在原生 runner 上分别冒烟，不使用 QEMU。' \
 		"- 上游发布说明：https://github.com/${UPSTREAM_REPO}/releases/tag/${UPSTREAM_TAG}"
 } >"${notes}"
 

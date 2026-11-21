@@ -2,13 +2,14 @@
 # =============================================================================
 #  qBittorrent Enhanced Edition · s6-overlay v3 · rootless / Quadlet 友好
 #
-#  只构建 linux/amd64。上游虽然也发布其它架构的静态包，但本项目只服务 x86_64
-#  主机，所以镜像里没有任何架构分支：架构不符时构建直接失败，而不是产出一个
-#  「能启动但跑错二进制」的镜像。
+#  支持 linux/amd64 与 linux/arm64。TARGETARCH 由 buildx 注入：
+#    amd64 → 上游 x86_64 静态包 / s6-overlay-x86_64
+#    arm64 → 上游 aarch64 静态包 / s6-overlay-aarch64
+#  其它架构在构建时直接失败，不会产出一个「能启动但跑错二进制」的镜像。
 #
 #  设计要点
 #    1. 上游 c0re100 直接发布 musl 静态二进制，不需要编译 Qt/libtorrent，
-#       构建只是「下载 + 解包 + 拷贝」，1 分钟内完成。
+#       构建只是「下载 + 解包 + 拷贝」，每种架构 1 分钟内完成。
 #    2. s6-overlay v3 作为 PID 1：stage1 → cont-init.d（按文件名顺序）→ services.d。
 #       S6_BEHAVIOUR_IF_STAGE2_FAILS=2 保证初始化失败就停容器，不带坏状态硬跑。
 #    3. 镜像默认 USER 为 root：只有 root 才能 chown 与降权。rootless Podman 下
@@ -26,8 +27,11 @@ ARG S6_OVERLAY_VERSION=3.2.3.2
 
 # -----------------------------------------------------------------------------
 # stage 1：取上游静态二进制
+#
+# 固定跑在构建机架构（BUILDPLATFORM）上：下载、解包、校验都不需要执行目标
+# 架构的代码，这样跨架构构建时也不必为这个 stage 起 QEMU。
 # -----------------------------------------------------------------------------
-FROM alpine:${ALPINE_VERSION} AS upstream
+FROM --platform=$BUILDPLATFORM alpine:${ALPINE_VERSION} AS upstream
 
 # alpine 自带 busybox ash，默认没有 pipefail —— 下面 `od | tr` 这条管道里
 # 前一段失败会被后一段的 0 退出码盖掉。显式打开 pipefail，set -e 才真正在
@@ -35,6 +39,7 @@ FROM alpine:${ALPINE_VERSION} AS upstream
 SHELL ["/bin/ash", "-o", "pipefail", "-c"]
 
 ARG QBITTORRENT_VERSION
+ARG TARGETARCH
 
 RUN apk add --no-cache curl unzip
 
@@ -42,7 +47,12 @@ WORKDIR /pkg
 
 # 注意：busybox 的 find 不认 +1M 这类后缀，体积过滤必须写成字节数 +Nc。
 RUN set -eux; \
-    url="https://github.com/c0re100/qBittorrent-Enhanced-Edition/releases/download/release-${QBITTORRENT_VERSION}/qbittorrent-enhanced-nox_x86_64-linux-musl_static.zip"; \
+    case "${TARGETARCH}" in \
+      amd64) upstream_arch=x86_64; elf_machine=3e00 ;; \
+      arm64) upstream_arch=aarch64; elf_machine=b700 ;; \
+      *) echo "ERROR: 不支持的架构 '${TARGETARCH}'（仅 linux/amd64 / linux/arm64）" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/c0re100/qBittorrent-Enhanced-Edition/releases/download/release-${QBITTORRENT_VERSION}/qbittorrent-enhanced-nox_${upstream_arch}-linux-musl_static.zip"; \
     echo "==> downloading ${url}"; \
     curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 -o pkg.zip "${url}"; \
     unzip -q -o pkg.zip -d ext; \
@@ -53,7 +63,11 @@ RUN set -eux; \
     [ "${size}" -ge 1048576 ] || { echo "ERROR: 二进制体积异常（${size} 字节），疑似下载到错误页" >&2; exit 1; }; \
     magic="$(head -c 4 /out/qbittorrent-nox | od -An -tx1 | tr -d ' \n')"; \
     [ "${magic}" = "7f454c46" ] || { echo "ERROR: 不是 ELF 文件（magic=${magic}）" >&2; exit 1; }; \
-    printf 'qbittorrent-nox %s · linux/amd64 · %s bytes\n' "${QBITTORRENT_VERSION}" "${size}"
+    machine="$(od -An -tx1 -j 18 -N 2 /out/qbittorrent-nox | tr -d ' \n')"; \
+    [ "${machine}" = "${elf_machine}" ] || { \
+      echo "ERROR: 二进制架构与目标不符（target=${TARGETARCH}, e_machine=${machine}, 期望 ${elf_machine}）" >&2; \
+      exit 1; }; \
+    printf 'qbittorrent-nox %s · linux/%s · %s bytes\n' "${QBITTORRENT_VERSION}" "${TARGETARCH}" "${size}"
 
 # -----------------------------------------------------------------------------
 # stage 2：运行镜像
@@ -68,9 +82,10 @@ ARG S6_OVERLAY_VERSION
 ARG WITH_PYTHON=1
 ARG IMAGE_SOURCE=""
 ARG VCS_REF=""
+ARG TARGETARCH
 
 LABEL org.opencontainers.image.title="qbittorrentee" \
-      org.opencontainers.image.description="qBittorrent Enhanced Edition + s6-overlay v3, PUID/PGID 可用，适配 rootless Podman / Quadlet（linux/amd64）" \
+      org.opencontainers.image.description="qBittorrent Enhanced Edition + s6-overlay v3, PUID/PGID 可用，适配 rootless Podman / Quadlet（linux/amd64, linux/arm64）" \
       org.opencontainers.image.version="${QBITTORRENT_VERSION}" \
       org.opencontainers.image.s6-overlay.version="${S6_OVERLAY_VERSION}" \
       org.opencontainers.image.source="${IMAGE_SOURCE}" \
@@ -96,18 +111,18 @@ RUN set -eux; \
     if [ "${WITH_PYTHON}" = "1" ]; then apk add --no-cache python3; fi
 
 # --- s6-overlay v3：下载 + 校验 + 解包 -------------------------------------
-# 架构守卫：非 x86_64 立即失败，避免用 --platform 构建出跑错二进制的镜像。
+# 架构守卫：只接受 amd64 / arm64，避免用 --platform 构建出跑错二进制的镜像。
 RUN set -eux; \
-    arch="$(uname -m)"; \
-    [ "${arch}" = "x86_64" ] || { \
-      echo "ERROR: 本镜像仅支持 linux/amd64，当前构建架构为 ${arch}。" >&2; \
-      echo "       请使用: docker build --platform linux/amd64 ..." >&2; \
-      exit 1; }; \
+    case "${TARGETARCH}" in \
+      amd64) s6_arch=x86_64 ;; \
+      arm64) s6_arch=aarch64 ;; \
+      *) echo "ERROR: 不支持的架构 '${TARGETARCH}'（仅 linux/amd64 / linux/arm64）" >&2; exit 1 ;; \
+    esac; \
     apk add --no-cache curl xz; \
     base="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"; \
     mkdir -p /tmp/s6; \
     for f in "s6-overlay-noarch.tar.xz" \
-             "s6-overlay-x86_64.tar.xz" \
+             "s6-overlay-${s6_arch}.tar.xz" \
              "s6-overlay-symlinks-noarch.tar.xz" \
              "s6-overlay-symlinks-arch.tar.xz"; do \
       curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 -o "/tmp/s6/${f}" "${base}/${f}"; \
