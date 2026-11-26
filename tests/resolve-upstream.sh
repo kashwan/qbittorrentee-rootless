@@ -291,6 +291,20 @@ else
 	fail "curl 非零退出码场景判定失败：$(cat "${TMP}/log")"
 fi
 
+echo "== 用例 6d：GHCR 查询失败时应 SKIP，而不是当作「标签不存在」触发重建 =="
+: > "${TMP}/out/6d"
+if FAKE_TOKEN=fake FAKE_HTTP_CODE=000 FAKE_HEAD_EXIT=18 FAKE_REQUIRE_OCI=1 \
+	FORCE=false EVENT_NAME=schedule run_case "${TMP}/out/6d"; then
+	eq "build"  "$(sed -n 's/^build=//p' "${TMP}/out/6d")" "false"
+	if grep -q "无法确认 GHCR 标签状态" "${TMP}/log"; then
+		pass "网络/注册表异常被识别为 SKIP，未触发重建"
+	else
+		fail "SKIP 原因未说明 GHCR 查询失败：$(cat "${TMP}/log")"
+	fi
+else
+	fail "GHCR 查询失败场景执行失败：$(cat "${TMP}/log")"
+fi
+
 echo "== 用例 7：已存在但 FORCE=true 时必须重建 =="
 : > "${TMP}/out/7"
 if FAKE_TOKEN=fake FAKE_HTTP_CODE=200 FORCE=true EVENT_NAME=workflow_dispatch run_case "${TMP}/out/7"; then

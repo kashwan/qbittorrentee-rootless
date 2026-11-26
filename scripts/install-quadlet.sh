@@ -15,13 +15,17 @@
 
 set -Eeuo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../rootfs/usr/local/bin/qbt-lib.sh
+. "${ROOT}/rootfs/usr/local/bin/qbt-lib.sh"
+
 IMAGE="${IMAGE:-}"
 CONFIG_DIR="${CONFIG_DIR:-${HOME}/qbt/config}"
 DOWNLOADS_DIR="${DOWNLOADS_DIR:-${HOME}/qbt/downloads}"
 UNIT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/containers/systemd"
 UNIT_NAME="qbittorrentee.container"
-WEBUI_PORT="${WEBUI_PORT:-8080}"
-BT_PORT="${BT_PORT:-6881}"
+WEBUI_PORT="${WEBUI_PORT:-${QBT_DEFAULT_WEBUI_PORT}}"
+BT_PORT="${BT_PORT:-${QBT_DEFAULT_BT_PORT}}"
 TZ_VALUE="${TZ:-$(cat /etc/timezone 2>/dev/null || echo Asia/Shanghai)}"
 DRY_RUN=0
 
@@ -49,7 +53,7 @@ case "${IMAGE%%:*}" in
   OCI 规范要求仓库名为小写。请改成 $(printf '%s' "${IMAGE}" | tr '[:upper:]' '[:lower:]')" ;;
 esac
 
-TEMPLATE="$(cd "$(dirname "$0")/.." && pwd)/quadlet/${UNIT_NAME}"
+TEMPLATE="${ROOT}/quadlet/${UNIT_NAME}"
 [[ -r "${TEMPLATE}" ]] || die "找不到模板：${TEMPLATE}"
 
 # podman 的 AutoUpdate=registry 要求镜像是「全限定引用」（含 registry/repo）。

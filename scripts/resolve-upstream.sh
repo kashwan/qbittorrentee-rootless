@@ -175,11 +175,11 @@ ghcr_token() {
 MANIFEST_ACCEPT='application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.docker.distribution.manifest.list.v2+json'
 
 tag_exists() {
-	local ref="$1" repo token code
+	local ref="$1" repo token code curl_rc
 	repo="${ref#"${IMAGE}:"}"
 	[[ "${IMAGE}" == ghcr.io/* ]] || return 1
 	token="$(ghcr_token "${IMAGE#ghcr.io/}")"
-	[[ -n "${token}" ]] || return 1
+	[[ -n "${token}" ]] || return 2
 
 	# 必须用 -I（真正的 HEAD 请求），不能写 -X HEAD。
 	# -X HEAD 只是把方法换成 HEAD，curl 仍然期待一个响应体；注册表只回头不回体，
@@ -188,12 +188,16 @@ tag_exists() {
 	# 于是标签恒被判为「不存在」—— 定时任务每 6 小时重建一次，把本应不可变的
 	# {version} 与 sha-{commit} 反复覆盖。2026-11 的 auto-update 误报即由此而来。
 	# 兜底改为 `|| true`，并且只保留数字，避免任何尾部杂质参与比较。
+	curl_rc=0
 	code="$(curl -s -I --max-time 20 -o /dev/null -w '%{http_code}' \
 		-H "Authorization: Bearer ${token}" \
 		-H "Accept: ${MANIFEST_ACCEPT}" \
-		"https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${repo}" 2>/dev/null || true)"
+		"https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${repo}" 2>/dev/null)" || curl_rc=$?
 	code="${code//[^0-9]/}"
-	[[ "${code}" == "200" ]]
+	[[ "${code}" == "200" ]] && return 0
+	[[ "${curl_rc}" -ne 0 ]] && return 2
+	[[ "${code}" == "404" ]] && return 1
+	return 2
 }
 
 finish_skip() {
@@ -211,8 +215,15 @@ if [[ "${FORCE}" == "true" ]]; then
 	note "FORCE=true，忽略已存在的 ${PRIMARY_REF}"
 elif [[ "${EVENT_NAME}" == "push" ]]; then
 	note "push 触发强制重建：${GITHUB_REF:-<未设置>}（edge 仅在 main 分支产出）"
-elif tag_exists "${PRIMARY_REF}"; then
-	finish_skip "镜像 ${PRIMARY_REF} 已存在，上游无新版本"
+else
+	if tag_exists "${PRIMARY_REF}"; then
+		finish_skip "镜像 ${PRIMARY_REF} 已存在，上游无新版本"
+	else
+		rc=$?
+		if [[ "${rc}" -eq 2 ]]; then
+			finish_skip "无法确认 GHCR 标签状态（网络/注册表异常），跳过本次构建"
+		fi
+	fi
 fi
 
 # -----------------------------------------------------------------------------

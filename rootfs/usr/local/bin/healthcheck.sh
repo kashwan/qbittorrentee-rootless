@@ -16,6 +16,9 @@
 
 set -u
 
+# shellcheck source=/usr/local/bin/qbt-lib.sh
+. "${QBT_LIB:-/usr/local/bin/qbt-lib.sh}"
+
 CONFIG_DIR="${CONFIG_DIR:-/config}"
 
 # 从配置文件里取 WebUI\Port（qBittorrent 用反斜杠分组）
@@ -39,7 +42,7 @@ add_port() {
 add_port "${HEALTHCHECK_PORT:-}"
 add_port "${WEBUI_PORT:-}"
 for p in $(conf_ports); do add_port "${p}"; done
-add_port 8080
+add_port "${QBT_DEFAULT_WEBUI_PORT}"
 
 probe_http() {
 	wget -q -T 3 -O /dev/null "http://127.0.0.1:${1}/" 2>/dev/null

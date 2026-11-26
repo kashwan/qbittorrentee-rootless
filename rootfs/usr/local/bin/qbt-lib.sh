@@ -10,6 +10,9 @@
 
 : "${QBT_LOG_TAG:=init}"
 
+QBT_DEFAULT_WEBUI_PORT=8080
+QBT_DEFAULT_BT_PORT=6881
+
 qbt_log()  { printf '\033[36m[%s]\033[0m %s\n' "${QBT_LOG_TAG}" "$*"; }
 qbt_warn() { printf '\033[33m[%s] 警告:\033[0m %s\n' "${QBT_LOG_TAG}" "$*" >&2; }
 qbt_err()  { printf '\033[31m[%s] 错误:\033[0m %s\n' "${QBT_LOG_TAG}" "$*" >&2; }
