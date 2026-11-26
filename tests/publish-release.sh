@@ -3,7 +3,7 @@
 #  tests/publish-release.sh · publish-release.sh 的离线单元测试
 #
 #  用桩件顶替 gh，不联网、不需要 token，验证三件容易出错的事：
-#    - 幂等：同名 Release 已存在时不重复创建
+#    - 幂等：同名 Release 已存在时更新说明，不重复创建
 #    - --latest 的判定：只有比现有最大版本更新才打这个标记
 #    - tag 已存在时不能传 --target（否则 gh 直接报错）
 #
@@ -47,6 +47,11 @@ if [[ "${1:-}" == "release" ]]; then
 		printf '%s\n' "$*" >>"${STUB_LOG:?}"
 		exit 0
 		;;
+	edit)
+		shift 2
+		printf '%s\n' "$*" >>"${STUB_LOG:?}"
+		exit 0
+		;;
 	esac
 fi
 if [[ "${1:-}" == "api" ]]; then
@@ -79,17 +84,18 @@ run() { # run <输出文件> [环境变量…]
 	return "${rc}"
 }
 
-echo "== 用例 1：同名 Release 已存在 → 幂等跳过 =="
+echo "== 用例 1：同名 Release 已存在 → 更新说明 =="
 : >"${STUB_LOG}"
 : >"${TMP}/out.env"
 rc=0
 run "${TMP}/o1" STUB_RELEASE_EXISTS=1 VERSION=5.2.4.10 || rc=$?
-if [[ "${rc}" -eq 0 ]] && grep -q "已存在" "${TMP}/o1" \
+if [[ "${rc}" -eq 0 ]] && grep -q "更新 Release" "${TMP}/o1" \
 	&& [[ "$(cat "${TMP}/out.env")" == "created=false" ]] \
-	&& [[ ! -s "${STUB_LOG}" ]]; then
-	ok "已存在的版本不重复创建"
+	&& grep -q "5.2.4.10 --title 5.2.4.10 --notes-file" "${STUB_LOG}" \
+	&& ! grep -q "release create" "${STUB_LOG}"; then
+	ok "已存在的版本更新说明，不重复创建"
 else
-	no "幂等跳过" "rc=${rc} out=$(cat "${TMP}/o1") calls=$(cat "${STUB_LOG}")"
+	no "更新已存在版本" "rc=${rc} out=$(cat "${TMP}/o1") calls=$(cat "${STUB_LOG}")"
 fi
 
 echo "== 用例 2：DRY_RUN 生成说明，不调用 create =="

@@ -195,14 +195,15 @@ Releases 页面因此成为一条按版本排好的时间线，`/releases/latest
 | 场景 | `build` | Release |
 |---|---|---|
 | 上游发了新版本（schedule 或手动发现） | 跑 | **创建** |
-| `push` 到 `main`（重建同一版本） | 跑 | 已存在 → 跳过 |
-| 推 `v*` tag（如 `v0.1.0`） | 跑 | 已存在 → 跳过 |
+| `push` 到 `main`（重建同一版本） | 跑 | 已存在 → 更新发布说明 |
+| 推 `v*` tag（如 `v0.1.0`） | 跑 | 已存在 → 更新发布说明 |
 | 上游无新版本（schedule 空跑） | 跳过 | 不执行 |
 | 冒烟或 rootless 失败 | 跑但失败 | **不执行**（`needs` 里带了 rootless） |
 
 `scripts/publish-release.sh` 自身是幂等的：先 `gh release view` 探一次，
-存在就打印「已存在，跳过」并退出 0。所以重复构建不会产生重复 Release，
-也不会把已经写好的发布说明覆盖掉。
+不存在就 `gh release create`；存在就 `gh release edit` 更新标题和发布说明。
+同一版本重建后，Release 里的 digest / 平台 / 推送标签也会跟着更新，不会留下
+旧的单架构信息。
 
 `--latest` 只在**本次版本大于已有最大版本**时才传。手动 `force_rebuild`
 一个旧版本不会把 Releases 页面的 Latest 指回旧版 —— 镜像的 `latest` 标签
@@ -243,8 +244,8 @@ Release 页面删除后，tag 会保留（GitHub 默认行为）。下次 `force
 时会因「tag 已存在」而省略 `--target`，直接复用现有 tag 创建 Release。
 若想把 tag 也一起重置，先在仓库 Tags 页面删除 tag 再走上面补发流程。
 
-`tests/publish-release.sh` 用桩件覆盖了幂等、`--latest` 判定、`--target` 省略
-三类分支，离线可跑。
+`tests/publish-release.sh` 用桩件覆盖了「已存在则更新、不存在则创建」、
+`--latest` 判定、`--target` 省略三类分支，离线可跑。
 
 ---
 

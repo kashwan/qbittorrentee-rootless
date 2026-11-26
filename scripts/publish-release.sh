@@ -14,8 +14,8 @@
 #    （CI 用 GITHUB_TOKEN 创建 tag 本就不会触发 workflow，这里是不依赖该
 #      隐式行为的额外一层保险。）
 #
-#  幂等：同名 release 已存在则退出 0。push 到 main 会重建镜像，但只有上游
-#       出现新版本时才需要新 release，重复调用不应报错。
+#  幂等：同名 release 已存在则更新发布说明。push 到 main 会重建镜像，同一
+#       版本的重建也应让 Release 里的 digest / 平台信息保持最新。
 #
 #  输入（环境变量）
 #    VERSION        必填，上游版本号，如 5.2.4.10
@@ -64,12 +64,11 @@ OUT_FILE="${GITHUB_OUTPUT:-/dev/null}"
 command -v gh >/dev/null 2>&1 || die "找不到 gh（GitHub CLI）"
 
 # -----------------------------------------------------------------------------
-# 1. 幂等：已有同名 release 就结束
+# 1. 探活：已有同名 release 时改为更新，不重复创建
 # -----------------------------------------------------------------------------
+release_exists=false
 if gh release view "${VERSION}" --repo "${REPO}" >/dev/null 2>&1; then
-	note "Release ${VERSION} 已存在，跳过"
-	printf 'created=false\n' >>"${OUT_FILE}"
-	exit 0
+	release_exists=true
 fi
 
 # -----------------------------------------------------------------------------
@@ -146,18 +145,31 @@ if [[ "${DRY_RUN}" == "true" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-# 5. 创建
+# 5. 创建或更新
 # -----------------------------------------------------------------------------
-args=(release create "${VERSION}" --title "${VERSION}" --notes-file "${notes}")
-if [[ "${tag_exists}" == "false" && -n "${TARGET_SHA}" ]]; then
-	args+=(--target "${TARGET_SHA}")
-fi
-if [[ "${is_latest}" == "true" ]]; then
-	args+=(--latest)
-fi
+if [[ "${release_exists}" == "true" ]]; then
+	args=(release edit "${VERSION}" --title "${VERSION}" --notes-file "${notes}")
+	if [[ "${is_latest}" == "true" ]]; then
+		args+=(--latest)
+	fi
 
-note "创建 Release ${VERSION}（latest=${is_latest} tag_exists=${tag_exists}）"
-gh "${args[@]}" --repo "${REPO}"
+	note "更新 Release ${VERSION}（latest=${is_latest}）"
+	gh "${args[@]}" --repo "${REPO}"
 
-printf 'created=true\n' >>"${OUT_FILE}"
-note "Release ${VERSION} 创建完成"
+	printf 'created=false\n' >>"${OUT_FILE}"
+	note "Release ${VERSION} 更新完成"
+else
+	args=(release create "${VERSION}" --title "${VERSION}" --notes-file "${notes}")
+	if [[ "${tag_exists}" == "false" && -n "${TARGET_SHA}" ]]; then
+		args+=(--target "${TARGET_SHA}")
+	fi
+	if [[ "${is_latest}" == "true" ]]; then
+		args+=(--latest)
+	fi
+
+	note "创建 Release ${VERSION}（latest=${is_latest} tag_exists=${tag_exists}）"
+	gh "${args[@]}" --repo "${REPO}"
+
+	printf 'created=true\n' >>"${OUT_FILE}"
+	note "Release ${VERSION} 创建完成"
+fi

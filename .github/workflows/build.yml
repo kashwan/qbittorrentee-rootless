@@ -352,8 +352,8 @@ jobs:
   #
   #    needs 里带上 rootless：只有冒烟 + rootless 全过才发版。
   #    build 为 false 时整个 job 跳过 —— 没构建就没有新版本可发。
-  #    脚本自身是幂等的：同名 Release 已存在就直接退出，所以 push 到 main
-  #    触发的重复重建不会产生重复 Release。
+  #    脚本自身是幂等的：同名 Release 已存在就更新发布说明，所以 push 到 main
+  #    触发的重复重建不会产生重复 Release，也不会留下旧的 digest / 平台信息。
   # ---------------------------------------------------------------------------
   release:
     needs: [resolve, merge, rootless]
