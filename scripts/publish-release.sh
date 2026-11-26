@@ -149,6 +149,9 @@ fi
 # -----------------------------------------------------------------------------
 if [[ "${release_exists}" == "true" ]]; then
 	args=(release edit "${VERSION}" --title "${VERSION}" --notes-file "${notes}")
+	if [[ -n "${TARGET_SHA}" ]]; then
+		args+=(--target "${TARGET_SHA}")
+	fi
 	if [[ "${is_latest}" == "true" ]]; then
 		args+=(--latest)
 	fi

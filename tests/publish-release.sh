@@ -84,16 +84,17 @@ run() { # run <输出文件> [环境变量…]
 	return "${rc}"
 }
 
-echo "== 用例 1：同名 Release 已存在 → 更新说明 =="
+echo "== 用例 1：同名 Release 已存在 → 更新说明并指向新 commit =="
 : >"${STUB_LOG}"
 : >"${TMP}/out.env"
 rc=0
-run "${TMP}/o1" STUB_RELEASE_EXISTS=1 VERSION=5.2.4.10 || rc=$?
+run "${TMP}/o1" STUB_RELEASE_EXISTS=1 VERSION=5.2.4.10 TARGET_SHA=abc1234 || rc=$?
 if [[ "${rc}" -eq 0 ]] && grep -q "更新 Release" "${TMP}/o1" \
 	&& [[ "$(cat "${TMP}/out.env")" == "created=false" ]] \
 	&& grep -q "5.2.4.10 --title 5.2.4.10 --notes-file" "${STUB_LOG}" \
+	&& grep -q -- "--target abc1234" "${STUB_LOG}" \
 	&& ! grep -q "release create" "${STUB_LOG}"; then
-	ok "已存在的版本更新说明，不重复创建"
+	ok "已存在的版本更新说明并指向新 commit，不重复创建"
 else
 	no "更新已存在版本" "rc=${rc} out=$(cat "${TMP}/o1") calls=$(cat "${STUB_LOG}")"
 fi
