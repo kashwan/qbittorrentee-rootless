@@ -128,7 +128,7 @@ qbt_ensure_user() {
 	__uid="$1"; __gid="$2"; __grp="$3"; __home="$4"
 	__name="$(awk -F: -v u="${__uid}" '$3==u {print $1; exit}' /etc/passwd)"
 	if [ -n "${__name}" ]; then
-		__cur="$(awk -F: -v n="${__name}" '$1==n {print $3; exit}' /etc/passwd)"
+		__cur="$(awk -F: -v n="${__name}" '$1==n {print $4; exit}' /etc/passwd)"
 		if [ "${__cur}" != "${__gid}" ]; then
 			usermod -g "${__grp}" "${__name}" >/dev/null 2>&1 || return 1
 		fi
@@ -150,9 +150,11 @@ qbt_ensure_user() {
 qbt_chown_tree() {
 	__path="$1"; __owner="$2"; __user="$3"; __group="$4"
 	[ -e "${__path}" ] || return 0
-	if ! find "${__path}" \( ! -user "${__user}" -o ! -group "${__group}" \) -print -quit 2>/dev/null | grep -q .; then
-		return 0
-	fi
+	__found="$(find "${__path}" \( ! -user "${__user}" -o ! -group "${__group}" \) -print -quit 2>/dev/null)" || {
+		qbt_warn "无法遍历 ${__path}，跳过属主修正（只读挂载、NFS root_squash 或 SELinux？）"
+		return 1
+	}
+	[ -n "${__found}" ] || return 0
 	if ! find "${__path}" \( ! -user "${__user}" -o ! -group "${__group}" \) \
 		-exec chown -h "${__owner}" {} + 2>/dev/null; then
 		qbt_warn "chown ${__path} 未完全成功（只读挂载、NFS root_squash 或 SELinux 标签？）"

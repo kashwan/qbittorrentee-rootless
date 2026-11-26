@@ -27,6 +27,7 @@ DRY_RUN=0
 
 die() { printf '\033[31m错误:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+sed_escape() { printf '%s' "$1" | sed 's/[&|\\]/\\&/g'; }
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -71,17 +72,24 @@ fi
 
 mkdir -p "${CONFIG_DIR}" "${DOWNLOADS_DIR}" "${UNIT_DIR}"
 
+IMAGE_ESC="$(sed_escape "${IMAGE}")"
+WEBUI_PORT_ESC="$(sed_escape "${WEBUI_PORT}")"
+BT_PORT_ESC="$(sed_escape "${BT_PORT}")"
+TZ_VALUE_ESC="$(sed_escape "${TZ_VALUE}")"
+CONFIG_DIR_ESC="$(sed_escape "${CONFIG_DIR}")"
+DOWNLOADS_DIR_ESC="$(sed_escape "${DOWNLOADS_DIR}")"
+
 rendered="$(
 	sed \
-		-e "s|ghcr.io/kashwan/qbittorrentee-rootless:latest|${IMAGE}|" \
-		-e "s|^Environment=WEBUI_PORT=.*|Environment=WEBUI_PORT=${WEBUI_PORT}|" \
-		-e "s|^Environment=BT_PORT=.*|Environment=BT_PORT=${BT_PORT}|" \
-		-e "s|^Environment=TZ=.*|Environment=TZ=${TZ_VALUE}|" \
-		-e "s|^PublishPort=8080:8080$|PublishPort=${WEBUI_PORT}:${WEBUI_PORT}|" \
-		-e "s|^PublishPort=6881:6881$|PublishPort=${BT_PORT}:${BT_PORT}|" \
-		-e "s|^PublishPort=6881:6881/udp$|PublishPort=${BT_PORT}:${BT_PORT}/udp|" \
-		-e "s|^Volume=%h/qbt/config:/config:Z|Volume=${CONFIG_DIR}:/config:Z|" \
-		-e "s|^Volume=%h/qbt/downloads:/downloads:Z|Volume=${DOWNLOADS_DIR}:/downloads:Z|" \
+		-e "s|ghcr.io/kashwan/qbittorrentee-rootless:latest|${IMAGE_ESC}|" \
+		-e "s|^Environment=WEBUI_PORT=.*|Environment=WEBUI_PORT=${WEBUI_PORT_ESC}|" \
+		-e "s|^Environment=BT_PORT=.*|Environment=BT_PORT=${BT_PORT_ESC}|" \
+		-e "s|^Environment=TZ=.*|Environment=TZ=${TZ_VALUE_ESC}|" \
+		-e "s|^PublishPort=8080:8080$|PublishPort=${WEBUI_PORT_ESC}:${WEBUI_PORT_ESC}|" \
+		-e "s|^PublishPort=6881:6881$|PublishPort=${BT_PORT_ESC}:${BT_PORT_ESC}|" \
+		-e "s|^PublishPort=6881:6881/udp$|PublishPort=${BT_PORT_ESC}:${BT_PORT_ESC}/udp|" \
+		-e "s|^Volume=%h/qbt/config:/config:Z|Volume=${CONFIG_DIR_ESC}:/config:Z|" \
+		-e "s|^Volume=%h/qbt/downloads:/downloads:Z|Volume=${DOWNLOADS_DIR_ESC}:/downloads:Z|" \
 		"${TEMPLATE}"
 )"
 
